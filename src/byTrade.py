@@ -1,158 +1,160 @@
-import pandas as pd
-import datetime
-import requests
+from datetime import datetime
+import threading
 import time
-import calendar
-from pybit import HTTP
-from datetime import datetime, timedelta, timezone
 
-from requests.api import post
+import pandas as pd
+from pybit import HTTP
 
 import apiKey as Key
+import market
 
-apiKey = Key.apiKey
-apiSecret = Key.apiSecret
 
-# symbol to be traded
-symbol = "MANAUSDT"
+class Trade(threading.Thread):
+    def __init__(
+        self,
+        marketType: market.Type,
+        tradeType: market.TradeType,
+        symbol: str,
+        shortMA: int = 18,
+        longMA: int = 60,
+        BBFactor: int = 2,
+        tickInterval: int = 1,
+    ) -> None:
+        threading.Thread.__init__(self)
+        mURL = market.URL(marketType, tradeType)
+        self.urlRestBybit = mURL.urlRestBybit
+        self.urlWebSocketPublic = mURL.urlWebSocketPublic
+        self.urlWebSocketPrivate = mURL.urlWebSocketPrivate
 
-query_kilne = "https://api.bybit.com/public/linear/kline?symbol="  # USDT
-# query_kilne = 'https://api.bybit.com/v2/public/kline/list?symbol=' # USD
-latest_infoSymbol = "https://api.bybit.com/v2/public/tickers?symbol="
+        self.apiKey = Key.apiKey
+        self.apiSecret = Key.apiSecret
+        self.symbol = symbol
+        self.shortMovingAverageTerm = shortMA
+        self.longMovingAverageTerm = longMA
+        self.bollingerBandsFactor = BBFactor
+        # tick_interval 1 3 5 15 30 60 120 240 360 720 "D" "M" "W"
+        self.tickInterval = tickInterval
+        self.isResistUpBB = False
+        self.isResistDownBB = False
 
-# candle in minutes
-tick_interval = "1"
+    def setMATerm(self, short: int, long: int) -> None:
+        if short >= long:
+            return
 
-# quantity to be traded in USD
-qty1 = 3
+        self.shortMovingAverageTerm = short
+        self.longMovingAverageTerm = long
 
-opt = 0
-while True:
-    bybitticker = symbol
+    def printConfig(self):
+        print(self.urlRestBybit)
+        print(self.urlWebSocketPublic)
+        print(self.urlWebSocketPrivate)
 
-    now = datetime.utcnow()
-    unixtime = calendar.timegm(now.utctimetuple())
-    since = unixtime
+        print(self.symbol)
+        print(self.shortMovingAverageTerm)
+        print(self.longMovingAverageTerm)
+        print(self.bollingerBandsFactor)
 
-    start = str(since - 60 * 60 * int(tick_interval))
-    url = (
-        query_kilne + bybitticker + "&interval=" + tick_interval + "&from=" + str(start)
-    )
-    data = requests.get(url).json()
-    D = pd.DataFrame(data["result"])
+    def run(self):
+        print("start trading ", self.symbol)
 
-    marketprice = latest_infoSymbol + symbol
-    res = requests.get(marketprice)
-    data = res.json()
-    lastprice = float(data["result"][0]["last_price"])
+        while True:
+            # 시장 정보 가져오기
+            readSession = HTTP(self.urlRestBybit)
+            data = readSession.query_kline(
+                symbol=self.symbol,
+                interval=self.tickInterval,
+                limit=200,  # MAX 200
+                from_time=int(
+                    time.time()
+                    - (self.longMovingAverageTerm + 2) * 60 * self.tickInterval
+                ),
+            )
+            dataDF = pd.DataFrame(data["result"])
+            diffTime = int(time.time()) - dataDF["open_time"].iloc[-1]
+            print(f"현재 시각 {datetime.fromtimestamp(time.time())} 분봉 시간차 {diffTime}")
 
-    price = lastprice
-    df = D["close"]
+            closeData = dataDF["close"]
 
-    ma9 = df.rolling(window=9).mean()
-    ma26 = df.rolling(window=26).mean()
+            # print(closeData)
 
-    test1 = ma9.iloc[-2] - ma26.iloc[-2]
-    test2 = ma9.iloc[-1] - ma26.iloc[-1]
+            shortMA = closeData.rolling(window=self.shortMovingAverageTerm).mean()
+            longMA = closeData.rolling(window=self.longMovingAverageTerm).mean()
 
-    session = HTTP(
-        endpoint="https://api.bybit.com/", api_key=apiKey, api_secret=apiSecret
-    )
+            # print(longMA)
 
-    positionsize = session.my_position(symbol=symbol)["result"][0]["size"]
-    if session.my_position(symbol=symbol)["result"][0]["side"] == "Sell":
-        positionsize = positionsize * -1
+            longMAStd = closeData.rolling(window=self.longMovingAverageTerm).std()
+            upBB = longMA + self.bollingerBandsFactor * longMAStd
+            downBB = longMA - self.bollingerBandsFactor * longMAStd
 
-        lastprice = float(
-            session.latest_information_for_symbol(symbol=symbol)["result"][0][
-                "last_price"
-            ]
-        )
-    call = "None"
+            # 안정장 BB 1%내
+            print(
+                f"BW {2*self.bollingerBandsFactor*longMAStd.iloc[-1]/longMA.iloc[-1]*100}%"
+            )
+            if self.bollingerBandsFactor * longMAStd.iloc[-1] < longMA.iloc[-1] * 0.005:
+                isInBox = True
+            else:
+                isInBox = False
 
-    try:
-        if test1 > 0 and test2 < 0:
-            if positionsize > 0:
-                print("skip")
-                time.sleep(2)
-                continue
-            call = "Dead Cross"
-            qty = qty1
-            if positionsize < 0:
-                qty = qty1 + abs(positionsize)
+            prevClosePrice = float(dataDF["close"].iloc[-2])
+            lastClosePrice = float(dataDF["close"].iloc[-1])
+            print(f"현재 종가 {lastClosePrice}")
 
-            if opt == 0:
-                opt = 1
+            # 구매 판매가 설정
+            orderBookData = readSession.orderbook(symbol=self.symbol)
+            orderBookData = pd.DataFrame(orderBookData["result"])
+            buyPrice = orderBookData["price"].iloc[25]  # 25번 행 buy 가격
+            sellPrice = orderBookData["price"].iloc[24]  # 24번 행 sell 가격
+            print("Buy Sell Price ", buyPrice, sellPrice)
 
-                print(
-                    session.place_active_order(
-                        symbol=bybitticker,
-                        side="Buy",
-                        order_type="Market",
-                        qty=qty1,
-                        time_in_force="GoodTillCancel",
-                        reduce_only=False,
-                        close_on_trigger=False,
-                    )
-                )
+            # 구입 판매 결정
+            accountSession = HTTP(self.urlRestBybit, self.apiKey, self.apiSecret)
 
-                print(
-                    session.place_active_order(
-                        symbol=bybitticker,
-                        side="Buy",
-                        order_type="Market",
-                        qty=qty1,
-                        time_in_force="GoodTillCancel",
-                        reduce_only=True,
-                        close_on_trigger=False,
-                    )
-                )
+            if isInBox:  # 안정장
+                print("안정장")
+                # 종가가 upBB를 넘었을때
+                if lastClosePrice > upBB.iloc[-1]:
+                    self.isResistUpBB = True
 
-        if test1 < 0 and test2 > 0:
-            if positionsize < 0:
-                print("skip")
-                time.sleep(2)
-                continue
-            call = "Golden Cross"
-            qty = qty1
+                if self.isResistUpBB and lastClosePrice < shortMA.iloc[-1]:
+                    # open short position
+                    self.isResistUpBB = False
+                    print("Limit에 open Short {self.symbol} {buyPrice}")
+                    # openShortResult = accountSession.place_active_order(
+                    #     symbol=self.symbol,
+                    #     side="Buy",
+                    #     order_type="Limit",
+                    #     qty=0.01,
+                    #     price=buyPrice,
+                    #     time_in_force=True,
+                    #     reduce_only=False,
+                    # )
 
-            if positionsize > 0:
-                qty = qty1 + abs(positionsize)
-            if opt == 1:
-                opt = 0
-                print(
-                    session.place_active_order(
-                        symbol=bybitticker,
-                        side="Sell",
-                        order_type="Market",
-                        qty=qty1,
-                        time_in_force="GoodTillCancel",
-                        reduce_only=True,
-                        close_on_trigger=False,
-                    )
-                )
+                # 진전 종가가 down를 넘었을때
+                if lastClosePrice < downBB.iloc[-1]:
+                    self.isResistDownBB = True
 
-                print(
-                    session.place_active_order(
-                        symbol=bybitticker,
-                        side="Sell",
-                        order_type="Market",
-                        qty=qty1,
-                        time_in_force="GoodTillCancel",
-                        reduce_only=False,
-                        close_on_trigger=False,
-                    )
-                )
-    except:
-        pass
+                if self.isResistDownBB and lastClosePrice > shortMA.iloc[-1]:
+                    # close Short position
+                    self.isResistDownBB = False
+                    print("Limit에 close Short {self.symbol} {sellPrice}")
+                    # closeShortResult = accountSession.place_active_order(
+                    #     symbol=self.symbol,
+                    #     side="Sell",
+                    #     order_type="Limit",
+                    #     qty=0.01,
+                    #     price=sellPrice,
+                    #     time_in_force=True,
+                    #     reduce_only=False,
+                    # )
+            else:  # 변동장
+                print("변동장")
+                # 포지션 확인 있는가 없는가?
+                # 포지션 있음
+                if shortMA.iloc[-1] > longMA.iloc[-1]:
+                    # 손절
+                    print("Limit에 close Short {self.symbol} {sellPrice}")
+                    pass
 
-    print("Name: ", bybitticker)
-    print("Date: ", now)
-    print("price: ", lastprice)
-    print("MA 9: ", round(ma9.iloc[-1], 2))
-    print("MA 26: ", round(ma26.iloc[-1], 2))
-    print("Golden Cross/Dead Cross: ", call)
-    print("opt: ", opt)
-    print("")
+            term = 60 * self.tickInterval + 1 - diffTime
+            time.sleep(term if term > 0 else 0)
 
-    time.sleep(2)
