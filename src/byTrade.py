@@ -7,13 +7,14 @@ from pybit import HTTP
 
 import apiKey as Key
 import market
+import strategy
 
 
 class Trade(threading.Thread):
     def __init__(
         self,
         marketType: market.Type,
-        tradeType: market.TradeType,
+        # tradeType: market.TradeType,
         symbol: str,
         shortMA: int = 18,
         longMA: int = 60,
@@ -21,7 +22,7 @@ class Trade(threading.Thread):
         tickInterval: int = 1,
     ) -> None:
         threading.Thread.__init__(self)
-        mURL = market.URL(marketType, tradeType)
+        mURL = market.URL(marketType, market.TradeType.MAIN)
         self.urlRestBybit = mURL.urlRestBybit
         self.urlWebSocketPublic = mURL.urlWebSocketPublic
         self.urlWebSocketPrivate = mURL.urlWebSocketPrivate
@@ -29,13 +30,13 @@ class Trade(threading.Thread):
         self.apiKey = Key.apiKey
         self.apiSecret = Key.apiSecret
         self.symbol = symbol
-        self.shortMovingAverageTerm = shortMA
-        self.longMovingAverageTerm = longMA
-        self.bollingerBandsFactor = BBFactor
         # tick_interval 1 3 5 15 30 60 120 240 360 720 "D" "M" "W"
         self.tickInterval = tickInterval
-        self.isResistUpBB = False
-        self.isResistDownBB = False
+
+        self.strategy = strategy.Strategy(BBFactor)
+
+        self.shortMovingAverageTerm = shortMA
+        self.longMovingAverageTerm = longMA
 
     def setMATerm(self, short: int, long: int) -> None:
         if short >= long:
@@ -58,6 +59,7 @@ class Trade(threading.Thread):
         print("start trading ", self.symbol)
 
         while True:
+            # TODO - 정보 읽기 분리
             # 시장 정보 가져오기
             readSession = HTTP(self.urlRestBybit)
             data = readSession.query_kline(
@@ -65,8 +67,7 @@ class Trade(threading.Thread):
                 interval=self.tickInterval,
                 limit=200,  # MAX 200
                 from_time=int(
-                    time.time()
-                    - (self.longMovingAverageTerm + 2) * 60 * self.tickInterval
+                    time.time() - self.longMovingAverageTerm * 60 * self.tickInterval
                 ),
             )
             dataDF = pd.DataFrame(data["result"])
@@ -80,24 +81,9 @@ class Trade(threading.Thread):
             shortMA = closeData.rolling(window=self.shortMovingAverageTerm).mean()
             longMA = closeData.rolling(window=self.longMovingAverageTerm).mean()
 
-            # print(longMA)
-
             longMAStd = closeData.rolling(window=self.longMovingAverageTerm).std()
             upBB = longMA + self.bollingerBandsFactor * longMAStd
             downBB = longMA - self.bollingerBandsFactor * longMAStd
-
-            # 안정장 BB 1%내
-            print(
-                f"BW {2*self.bollingerBandsFactor*longMAStd.iloc[-1]/longMA.iloc[-1]*100}%"
-            )
-            if self.bollingerBandsFactor * longMAStd.iloc[-1] < longMA.iloc[-1] * 0.005:
-                isInBox = True
-            else:
-                isInBox = False
-
-            prevClosePrice = float(dataDF["close"].iloc[-2])
-            lastClosePrice = float(dataDF["close"].iloc[-1])
-            print(f"현재 종가 {lastClosePrice}")
 
             # 구매 판매가 설정
             orderBookData = readSession.orderbook(symbol=self.symbol)
@@ -106,54 +92,46 @@ class Trade(threading.Thread):
             sellPrice = orderBookData["price"].iloc[24]  # 24번 행 sell 가격
             print("Buy Sell Price ", buyPrice, sellPrice)
 
+            coinData = strategy.CoinData(
+                shortMA.iloc[-1],
+                longMA.iloc[-1],
+                longMAStd.iloc[-1],
+                closeData.iloc[-1],
+            )
+
             # 구입 판매 결정
             accountSession = HTTP(self.urlRestBybit, self.apiKey, self.apiSecret)
+            decision = self.strategy.decide(coinData)
 
-            if isInBox:  # 안정장
-                print("안정장")
-                # 종가가 upBB를 넘었을때
-                if lastClosePrice > upBB.iloc[-1]:
-                    self.isResistUpBB = True
+            if decision == strategy.Decision.openShort:
+                print("Limit에 open Short {self.symbol} {buyPrice}")
+                openShortResult = accountSession.place_active_order(
+                    symbol=self.symbol,
+                    side="Buy",
+                    order_type="Limit",
+                    qty=0.01,
+                    price=buyPrice,
+                    time_in_force=True,
+                    reduce_only=False,
+                )
+                print(openShortResult)
+            elif decision == strategy.Decision.closeShort:
+                print("Limit에 close Short {self.symbol} {buyPrice}")
+                closeShortResult = accountSession.place_active_order(
+                    symbol=self.symbol,
+                    side="Sell",
+                    order_type="Limit",
+                    qty=0.01,
+                    price=sellPrice,
+                    time_in_force=True,
+                    reduce_only=False,
+                )
+                print(closeShortResult)
+            elif decision == strategy.Decision.openLong:
+                print("Limit에 open Long {self.symbol} {buyPrice}")
 
-                if self.isResistUpBB and lastClosePrice < shortMA.iloc[-1]:
-                    # open short position
-                    self.isResistUpBB = False
-                    print("Limit에 open Short {self.symbol} {buyPrice}")
-                    # openShortResult = accountSession.place_active_order(
-                    #     symbol=self.symbol,
-                    #     side="Buy",
-                    #     order_type="Limit",
-                    #     qty=0.01,
-                    #     price=buyPrice,
-                    #     time_in_force=True,
-                    #     reduce_only=False,
-                    # )
-
-                # 진전 종가가 down를 넘었을때
-                if lastClosePrice < downBB.iloc[-1]:
-                    self.isResistDownBB = True
-
-                if self.isResistDownBB and lastClosePrice > shortMA.iloc[-1]:
-                    # close Short position
-                    self.isResistDownBB = False
-                    print("Limit에 close Short {self.symbol} {sellPrice}")
-                    # closeShortResult = accountSession.place_active_order(
-                    #     symbol=self.symbol,
-                    #     side="Sell",
-                    #     order_type="Limit",
-                    #     qty=0.01,
-                    #     price=sellPrice,
-                    #     time_in_force=True,
-                    #     reduce_only=False,
-                    # )
-            else:  # 변동장
-                print("변동장")
-                # 포지션 확인 있는가 없는가?
-                # 포지션 있음
-                if shortMA.iloc[-1] > longMA.iloc[-1]:
-                    # 손절
-                    print("Limit에 close Short {self.symbol} {sellPrice}")
-                    pass
+            elif decision == strategy.Decision.closeLong:
+                print("Limit에 close long {self.symbol} {buyPrice}")
 
             term = 60 * self.tickInterval + 1 - diffTime
             time.sleep(term if term > 0 else 0)
