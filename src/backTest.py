@@ -2,7 +2,7 @@ from datetime import datetime
 import heapq
 import threading
 import time
-from unittest import result
+from typing import Dict
 
 import market
 import strategy
@@ -30,8 +30,16 @@ class Account:
             price + 2 * (self.averageCoin() - price)
         )
 
+    def toDict(self) -> Dict:
+        return {
+            "USDT": self.usdt,
+            "Coin": self.coinList,
+            "averageCoin": self.averageCoin(),
+            "amount": self.amountCoin(),
+        }
+
     def __str__(self) -> str:
-        return f"USDT : {self.usdt}, Coin : {self.coinList}, averageCoin : {self.averageCoin()}, amount : {self.amountCoin()}"
+        return str(self.toDict())
 
 
 class BackTest(threading.Thread):
@@ -46,6 +54,7 @@ class BackTest(threading.Thread):
         BBFactor: int = 2,
         tickInterval: int = 1,
     ) -> None:
+
         threading.Thread.__init__(self)
         mURL = market.URL(marketType, market.TradeType.MAIN)
         self.urlRestBybit = mURL.urlRestBybit
@@ -82,6 +91,8 @@ class BackTest(threading.Thread):
         self.accountBook = pd.DataFrame(tradeData, index=[0])
         print(self.accountBook)
 
+        print(self.account)
+
     def getData(self, startTime: int, limit: int = 200) -> pd.DataFrame:
         data = self.readSession.query_kline(
             symbol=self.symbol,
@@ -89,9 +100,8 @@ class BackTest(threading.Thread):
             limit=limit,  # MAX 200
             from_time=int(startTime),
         )
-
         resultData = pd.DataFrame(data["result"])
-        # resultData.set_index("open_time", inplace=True)
+        time.sleep(0.01)  # API 과다 호출 방지
         return resultData
 
     def run(self):
@@ -107,21 +117,23 @@ class BackTest(threading.Thread):
         lastTime = int(data["open_time"].iloc[-1]) + 1
 
         while lastTime < self.endDate.timestamp():
-            print("time : ", datetime.fromtimestamp(lastTime))
+            print("Load Data from Time : ", datetime.fromtimestamp(lastTime))
             resultdata: pd.DataFrame = self.getData(lastTime)
-            lastTime = int(data["open_time"].iloc[-1]) + 1
-            time.sleep(0.01)  # API 과다 호출 방지
+            lastTime: int = int(resultdata["open_time"].iloc[-1]) + 1
 
-            data = data.iloc[-60:].append(resultdata, ignore_index=True)
+            data: pd.DataFrame = data.iloc[-60:].append(resultdata, ignore_index=True)
 
-            closeData = data["close"]
+            # dateString = datetime.fromtimestamp(lastTime).strftime("%y.%m.%d %H%M%S")
+            # data.to_csv(f"result/data{dateString}.csv")
+
+            closeData: pd.DataFrame = data["close"]
             shortMA = closeData.rolling(window=self.shortMovingAverageTerm).mean()
             longMA = closeData.rolling(window=self.longMovingAverageTerm).mean()
             longMAStd = closeData.rolling(window=self.longMovingAverageTerm).std()
 
             i = 60
             while i < len(closeData):
-                tradeTime = data["open_time"].iloc[i]
+                tradeTime: int = data["open_time"].iloc[i]
 
                 coinData = strategy.CoinData(
                     float(shortMA.iloc[i]),
@@ -133,8 +145,8 @@ class BackTest(threading.Thread):
                 decision = self.strategy.decide(coinData)
                 side = ""
                 if decision == strategy.Decision.openShort:
-                    # print(f"Limit에 open Short {self.symbol} {coinData.close}")
-                    if self.account.usdt > coinData.close * self.qty:
+                    if self.account.usdt > coinData.close * self.qty * 2:
+                        # print(f"Limit에 open Short {self.symbol} {coinData.close}")
                         self.account.usdt -= coinData.close * self.qty
                         heapq.heappush(self.account.coinList, coinData.close)
                         self.account.usdt -= coinData.close * self.qty
@@ -185,7 +197,14 @@ class BackTest(threading.Thread):
 
                 i += 1
 
-        self.accountBook.to_csv("accountBook.csv")
+        account = pd.DataFrame(self.account.toDict())
         print(self.accountBook)
-        print(self.account)
+        print(account)
+
+        try:
+            self.accountBook.to_csv(f"result/{self.symbol} accountBook.csv")
+            account.to_csv(f"result/{self.symbol} account.csv")
+        except:
+            self.accountBook.to_csv(f"result/{self.symbol} accountBook.temp")
+            account.to_csv(f"result/{self.symbol} account.temp")
 
