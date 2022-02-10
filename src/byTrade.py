@@ -101,9 +101,12 @@ class Trade(threading.Thread):
 
             # 구입 판매 결정
             accountSession = HTTP(self.urlRestBybit, self.apiKey, self.apiSecret)
-            decision = self.strategy.decide(coinData)
+            self.strategy.decide(coinData)
 
-            if decision == strategy.Decision.openShort:
+            # 전략 수행
+            self.strategy.decide(coinData)
+            side = ""
+            if self.strategy.openShort:
                 print("Limit에 open Short {self.symbol} {buyPrice}")
                 openShortResult = accountSession.place_active_order(
                     symbol=self.symbol,
@@ -115,23 +118,26 @@ class Trade(threading.Thread):
                     reduce_only=False,
                 )
                 print(openShortResult)
-            elif decision == strategy.Decision.closeShort:
-                print("Limit에 close Short {self.symbol} {buyPrice}")
-                closeShortResult = accountSession.place_active_order(
-                    symbol=self.symbol,
-                    side="Sell",
-                    order_type="Limit",
-                    qty=0.01,
-                    price=sellPrice,
-                    time_in_force=True,
-                    reduce_only=False,
-                )
-                print(closeShortResult)
-            elif decision == strategy.Decision.openLong:
-                print("Limit에 open Long {self.symbol} {buyPrice}")
 
-            elif decision == strategy.Decision.closeLong:
-                print("Limit에 close long {self.symbol} {buyPrice}")
+            if self.strategy.closeShort:
+                # TODO closeShort
+                print("Limit에 close Short {self.symbol} {buyPrice}")
+
+            if self.strategy.openLong:
+                # TODO openLong
+                print("Limit에 open long {self.symbol} {buyPrice}")
+
+            if self.strategy.closeLong:
+                # TODO closeLong
+                print("Limit에 open Short {self.symbol} {buyPrice}")
+
+            if self.strategy.allCloseLong:
+                # TODO allCloseLong
+                print("Limit에 allCloseLong {self.symbol} {buyPrice}")
+
+            if self.strategy.allCloseShort:
+                # TODO allCloseShort
+                print("Limit에 allCloseShort {self.symbol} {buyPrice}")
 
             term = 60 * self.tickInterval + 1 - diffTime
             time.sleep(term if term > 0 else 0)

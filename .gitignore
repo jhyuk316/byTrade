@@ -1,3 +1,6 @@
 src/__pycache__/
 result/*
 testpy.py
+!*.md
+data/
+backtest.sqlite3

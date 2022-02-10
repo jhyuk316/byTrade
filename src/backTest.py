@@ -13,33 +13,135 @@ import pandas as pd
 class Account:
     def __init__(self, qty) -> None:
         self.usdt = 3000
-        self.coinList = []
+        self.shortCoin = 0
+        self.numShortCoin = 0
+        self.longCoin = 0
+        self.numLongCoin = 0
         self.qty = qty
 
-    def averageCoin(self) -> float:
-        if not self.coinList:
-            return 0
-
-        return sum(self.coinList) / len(self.coinList)
-
-    def amountCoin(self) -> int:
-        return len(self.coinList)
-
-    def estimatedTotalAcount(self, price: float) -> float:
-        return self.usdt + self.amountCoin() * self.qty * (
-            price + 2 * (self.averageCoin() - price)
+    def estimatedTotal(self, price: float) -> float:
+        shortBenefit = (
+            self.numShortCoin * self.qty * (price + 2 * (self.shortCoin - price))
         )
+        longBenefit = self.numLongCoin * self.qty * price
+        return self.usdt + shortBenefit + longBenefit
+
+    def openShort(self, price: float) -> str:
+        if price * self.qty < self.usdt:
+            self.usdt -= self.qty * price
+            self.shortCoin = (self.shortCoin * self.numShortCoin + price) / (
+                self.numShortCoin + 1
+            )
+            self.numShortCoin += 1
+            return "openShort"
+        else:
+            print("Fail openShort Account have not enough usdt")
+            return "Fail openShort"
+
+    def closeShort(self, price: float) -> str:
+        if self.numShortCoin > 0:
+            self.usdt += self.qty * (price + 2 * (self.shortCoin - price))
+            if self.numShortCoin == 1:
+                self.shortCoin = 0
+            else:
+                self.shortCoin = (self.shortCoin * self.numShortCoin - price) / (
+                    self.numShortCoin - 1
+                )
+            self.numShortCoin -= 1
+            return "closeShort"
+        else:
+            print("Fail closeShort Account have not short")
+            return "Fail closeShort"
+
+    def openLong(self, price: float) -> str:
+        if price * self.qty < self.usdt:
+            self.usdt -= self.qty * price
+            self.longCoin = (self.longCoin * self.numLongCoin + price) / (
+                self.numLongCoin + 1
+            )
+            self.numLongCoin += 1
+            return "openLong"
+        else:
+            print("Fail openLong Account have not enough usdt")
+            return "Fail openLong"
+
+    def closeLong(self, price: float) -> str:
+        if self.numLongCoin > 0:
+            self.usdt += self.qty * price
+            if self.numLongCoin == 1:
+                self.longCoin = 0
+            else:
+                self.longCoin = (self.longCoin * self.numLongCoin - price) / (
+                    self.numLongCoin - 1
+                )
+            self.numLongCoin -= 1
+            return "closeLong"
+        else:
+            print("Fail closeLong Account have not long")
+            return "Fail closeLong"
+
+    def allCloseLong(self, price: float) -> str:
+        while self.numLongCoin > 0:
+            self.closeLong(price)
+        return "AllCloseLong"
+
+    def allCloseShort(self, price: float) -> str:
+        while self.numShortCoin > 0:
+            self.closeShort(price)
+        return "AllCloseShort"
 
     def toDict(self) -> Dict:
         return {
             "USDT": self.usdt,
-            "Coin": self.coinList,
-            "averageCoin": self.averageCoin(),
-            "amount": self.amountCoin(),
+            "ShortCoin": self.shortCoin,
+            "Number of ShortCoin": self.numShortCoin,
+            "LongCoin": self.longCoin,
+            "Number of LongCoin": self.numLongCoin,
         }
+
+    def toDataFrame(self) -> pd.DataFrame:
+        return pd.DataFrame(self.toDict(), index=[0])
 
     def __str__(self) -> str:
         return str(self.toDict())
+
+
+class AccountBook:
+    def __init__(self, account: Account, startDate: datetime) -> None:
+        self.account = account
+        tradeData = {
+            "TradeTime": startDate,
+            "Side": None,
+            "Price": None,
+            "USDT": self.account.usdt,
+            "EstiUSDT": self.account.usdt,
+            "EarningRate %": None,
+            "TotalEarningRate %": None,
+        }
+        self.book = pd.DataFrame(tradeData, index=[0])
+
+    def write(self, tradeTime: int, side: str, price: float) -> None:
+        EarningRate = (
+            self.account.estimatedTotal(price) / self.book["EstiUSDT"].iloc[-1] - 1
+        )
+        TotalEarningRate = (
+            self.account.estimatedTotal(price) / self.book["EstiUSDT"].iloc[0] - 1
+        )
+
+        tradeData = {
+            "TradeTime": str(datetime.fromtimestamp(tradeTime)),
+            "Side": side,
+            "Price": price,
+            "USDT": self.account.usdt,
+            "EstiUSDT": self.account.estimatedTotal(price),
+            "EarningRate %": f"{EarningRate * 100:.2f}",
+            "TotalEarningRate %": f"{TotalEarningRate * 100:.2f}",
+        }
+        # print(tradeData)
+        self.book = self.book.append(tradeData, ignore_index=True)
+
+    def toDataFrame(self) -> pd.DataFrame:
+        return self.book
 
 
 class BackTest(threading.Thread):
@@ -49,10 +151,11 @@ class BackTest(threading.Thread):
         symbol: str,
         startDate: datetime,
         endDate: datetime,
+        quantity: float,
+        tickInterval: int = 1,
         shortMA: int = 18,
         longMA: int = 60,
         BBFactor: int = 2,
-        tickInterval: int = 1,
     ) -> None:
 
         threading.Thread.__init__(self)
@@ -74,23 +177,12 @@ class BackTest(threading.Thread):
         self.endDate = endDate
 
         self.readSession = HTTP(self.urlRestBybit)
-        self.qty = 100
+        self.qty = quantity
 
         self.account = Account(self.qty)
+        self.accountBook = AccountBook(self.account, startDate)
 
-        # accountBook 초기화
-        tradeData = {
-            "TradeTime": self.startDate,
-            "Side": None,
-            "Price": None,
-            "USDT": self.account.usdt,
-            "EstiUSDT": self.account.usdt,
-            "EarningRate": None,
-            "TotalEarningRate": None,
-        }
-        self.accountBook = pd.DataFrame(tradeData, index=[0])
         print(self.accountBook)
-
         print(self.account)
 
     def getData(self, startTime: int, limit: int = 200) -> pd.DataFrame:
@@ -101,7 +193,7 @@ class BackTest(threading.Thread):
             from_time=int(startTime),
         )
         resultData = pd.DataFrame(data["result"])
-        time.sleep(0.01)  # API 과다 호출 방지
+        time.sleep(0.1)  # API 과다 호출 방지
         return resultData
 
     def run(self):
@@ -131,8 +223,7 @@ class BackTest(threading.Thread):
             longMA = closeData.rolling(window=self.longMovingAverageTerm).mean()
             longMAStd = closeData.rolling(window=self.longMovingAverageTerm).std()
 
-            i = 60
-            while i < len(closeData):
+            for i in range(60, len(closeData)):
                 tradeTime: int = data["open_time"].iloc[i]
 
                 coinData = strategy.CoinData(
@@ -142,69 +233,54 @@ class BackTest(threading.Thread):
                     float(closeData.iloc[i]),
                 )
 
-                decision = self.strategy.decide(coinData)
+                # 전략 수행
+                self.strategy.decide(coinData)
                 side = ""
-                if decision == strategy.Decision.openShort:
-                    if self.account.usdt > coinData.close * self.qty * 2:
-                        # print(f"Limit에 open Short {self.symbol} {coinData.close}")
-                        self.account.usdt -= coinData.close * self.qty
-                        heapq.heappush(self.account.coinList, coinData.close)
-                        self.account.usdt -= coinData.close * self.qty
-                        heapq.heappush(self.account.coinList, coinData.close)
-                        side = "openShort"
-                    else:
-                        side = "Fail openShort"
-                        print(
-                            f"Fail : Limit에 open Short {self.symbol} {coinData.close}"
-                        )
+                if self.strategy.openShort:
+                    side = self.account.openShort(coinData.close)
+                    if not self.strategy.isInBox:
+                        side += "*"
+                    self.accountBook.write(tradeTime, side, coinData.close)
 
-                elif decision == strategy.Decision.closeShort:
-                    if self.account.coinList:
-                        # print(f"Limit에 close Short {self.symbol} {coinData.close}")
-                        benefit = heapq.heappop(self.account.coinList) - coinData.close
-                        self.account.usdt += (coinData.close + 2 * benefit) * self.qty
-                        side = "closeShort"
-                    else:
-                        side = "Fail closeShort"
-                        print(
-                            f"Fail : Limit에 close Short {self.symbol} {coinData.close}"
-                        )
+                if self.strategy.closeShort:
+                    side = self.account.closeShort(coinData.close)
+                    if not self.strategy.isInBox:
+                        side += "*"
+                    self.accountBook.write(tradeTime, side, coinData.close)
 
-                elif decision == strategy.Decision.openLong:
-                    print(f"Limit에 open Long {self.symbol} {coinData.close}")
-                elif decision == strategy.Decision.closeLong:
-                    print(f"Limit에 close long {self.symbol} {coinData.close}")
+                if self.strategy.openLong:
+                    side = self.account.openLong(coinData.close)
+                    if not self.strategy.isInBox:
+                        side += "*"
+                    self.accountBook.write(tradeTime, side, coinData.close)
 
-                # 자산 변동 기록
-                if decision != strategy.Decision.hold:
-                    tradeData = {
-                        "TradeTime": str(datetime.fromtimestamp(tradeTime)),
-                        "Side": side,
-                        "Price": coinData.close,
-                        "USDT": self.account.usdt,
-                        "EstiUSDT": self.account.estimatedTotalAcount(coinData.close),
-                        "EarningRate": self.account.estimatedTotalAcount(coinData.close)
-                        / self.accountBook["EstiUSDT"].iloc[-1],
-                        "TotalEarningRate": self.account.estimatedTotalAcount(
-                            coinData.close
-                        )
-                        / self.accountBook["EstiUSDT"].iloc[0],
-                    }
-                    # print(tradeData)
-                    self.accountBook = self.accountBook.append(
-                        tradeData, ignore_index=True
-                    )
+                if self.strategy.closeLong:
+                    side = self.account.closeLong(coinData.close)
+                    if not self.strategy.isInBox:
+                        side += "*"
+                    self.accountBook.write(tradeTime, side, coinData.close)
 
-                i += 1
+                if self.strategy.allCloseLong:
+                    side = self.account.allCloseLong(coinData.close)
+                    if not self.strategy.isInBox:
+                        side += "*"
+                    self.accountBook.write(tradeTime, side, coinData.close)
 
-        account = pd.DataFrame(self.account.toDict())
-        print(self.accountBook)
+                if self.strategy.allCloseShort:
+                    side = self.account.allCloseShort(coinData.close)
+                    if not self.strategy.isInBox:
+                        side += "*"
+                    self.accountBook.write(tradeTime, side, coinData.close)
+
+        accountBook = self.accountBook.toDataFrame()
+        account = self.account.toDataFrame()
+
+        print(accountBook)
         print(account)
 
         try:
-            self.accountBook.to_csv(f"result/{self.symbol} accountBook.csv")
+            accountBook.to_csv(f"result/{self.symbol} accountBook.csv")
             account.to_csv(f"result/{self.symbol} account.csv")
         except:
-            self.accountBook.to_csv(f"result/{self.symbol} accountBook.temp")
+            accountBook.to_csv(f"result/{self.symbol} accountBook.temp")
             account.to_csv(f"result/{self.symbol} account.temp")
-

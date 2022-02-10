@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from enum import Enum
 
 
 @dataclass
@@ -14,15 +13,7 @@ class CoinData:
     low: float = None
 
 
-class Decision(Enum):
-    openShort = 1
-    closeShort = 2
-    openLong = 3
-    closeLong = 4
-    hold = 5
-
-
-# TODO RSI 조사
+# TODO ema macd rsi 조사
 # 받아올 데이터를 무엇으로 할 것인가?
 # 데이터 가공의 역할을 누가 맡을 것인가?
 
@@ -34,8 +25,10 @@ class Strategy:
         self.isCrossUpBB = False
         self.isCrossDownBB = False
         self.bollingerBandsFactor = BBFactor
+        self._initDecision_()
 
-    def decide(self, coinData: CoinData) -> Decision:
+    def decide(self, coinData: CoinData) -> None:
+        self._initDecision_()
         self.preData = self.curData
         self.curData = coinData
 
@@ -44,27 +37,60 @@ class Strategy:
             self.curData.longMA - self.bollingerBandsFactor * self.curData.longMAStd
         )
 
-        isInBox = True
+        self.isInBox = True
         if (
             self.curData.longMAStd * self.bollingerBandsFactor
             > self.curData.longMA * 0.005
         ):
-            isInBox = False
+            self.isInBox = False
 
         if self.curData.close >= upBB:
             self.isCrossUpBB = True
-
         if self.curData.close <= downBB:
             self.isCrossDownBB = True
 
         if self.isCrossUpBB and self.curData.close < self.curData.shortMA:
             self.isCrossUpBB = False
             self.isCrossDownBB = False
-            return Decision.openShort
+            if not self.isInBox:
+                self.allCloseLong = True
+                # self.closeLong = True
+            else:
+                # self.allCloseLong = True
+                self.closeLong = True
+            self.openShort = True
 
         if self.isCrossDownBB and self.curData.close > self.curData.shortMA:
             self.isCrossUpBB = False
             self.isCrossDownBB = False
-            return Decision.closeShort
+            if not self.isInBox:
+                self.allCloseShort = True
+                # self.closeShort = True
+            else:
+                # self.allCloseShort = True
+                self.closeShort = True
+            self.openLong = True
 
-        return Decision.hold
+        self.hold = self._isHold_()
+
+    def _initDecision_(self):
+        self.openShort = False
+        self.closeShort = False
+        self.openLong = False
+        self.closeLong = False
+        self.allCloseShort = False
+        self.allCloseLong = False
+        self.hold = True
+
+    def _isHold_(self) -> bool:
+        if (
+            self.openShort
+            or self.closeShort
+            or self.openLong
+            or self.closeLong
+            or self.allCloseLong
+            or self.allCloseShort
+        ):
+            return False
+        return True
+
