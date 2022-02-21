@@ -8,28 +8,27 @@ import market
 import strategy
 from pybit import HTTP
 import pandas as pd
+import matplotlib.pyplot as plt
 
 
 class Account:
     def __init__(self, qty) -> None:
         self.usdt = 3000
-        self.shortCoin = 0
-        self.numShortCoin = 0
-        self.longCoin = 0
+        self.shortPrice = 0  # 숏 평단가.
+        self.numShortCoin = 0  # 숏 갯수.
+        self.longPrice = 0
         self.numLongCoin = 0
         self.qty = qty
 
     def estimatedTotal(self, price: float) -> float:
-        shortBenefit = (
-            self.numShortCoin * self.qty * (price + 2 * (self.shortCoin - price))
-        )
+        shortBenefit = self.numShortCoin * self.qty * (2 * self.shortPrice - price)
         longBenefit = self.numLongCoin * self.qty * price
         return self.usdt + shortBenefit + longBenefit
 
     def openShort(self, price: float) -> str:
         if price * self.qty < self.usdt:
             self.usdt -= self.qty * price
-            self.shortCoin = (self.shortCoin * self.numShortCoin + price) / (
+            self.shortPrice = (self.shortPrice * self.numShortCoin + price) / (
                 self.numShortCoin + 1
             )
             self.numShortCoin += 1
@@ -40,11 +39,11 @@ class Account:
 
     def closeShort(self, price: float) -> str:
         if self.numShortCoin > 0:
-            self.usdt += self.qty * (price + 2 * (self.shortCoin - price))
+            self.usdt += self.qty * (2 * self.shortPrice - price)
             if self.numShortCoin == 1:
-                self.shortCoin = 0
+                self.shortPrice = 0
             else:
-                self.shortCoin = (self.shortCoin * self.numShortCoin - price) / (
+                self.shortPrice = (self.shortPrice * self.numShortCoin - price) / (
                     self.numShortCoin - 1
                 )
             self.numShortCoin -= 1
@@ -56,7 +55,7 @@ class Account:
     def openLong(self, price: float) -> str:
         if price * self.qty < self.usdt:
             self.usdt -= self.qty * price
-            self.longCoin = (self.longCoin * self.numLongCoin + price) / (
+            self.longPrice = (self.longPrice * self.numLongCoin + price) / (
                 self.numLongCoin + 1
             )
             self.numLongCoin += 1
@@ -69,9 +68,9 @@ class Account:
         if self.numLongCoin > 0:
             self.usdt += self.qty * price
             if self.numLongCoin == 1:
-                self.longCoin = 0
+                self.longPrice = 0
             else:
-                self.longCoin = (self.longCoin * self.numLongCoin - price) / (
+                self.longPrice = (self.longPrice * self.numLongCoin - price) / (
                     self.numLongCoin - 1
                 )
             self.numLongCoin -= 1
@@ -93,9 +92,9 @@ class Account:
     def toDict(self) -> Dict:
         return {
             "USDT": self.usdt,
-            "ShortCoin": self.shortCoin,
+            "ShortCoin": self.shortPrice,
             "Number of ShortCoin": self.numShortCoin,
-            "LongCoin": self.longCoin,
+            "LongCoin": self.longPrice,
             "Number of LongCoin": self.numLongCoin,
         }
 
@@ -138,7 +137,9 @@ class AccountBook:
             "TotalEarningRate %": f"{TotalEarningRate * 100:.2f}",
         }
         # print(tradeData)
-        self.book = self.book.append(tradeData, ignore_index=True)
+        # self.book = self.book.append(tradeData, ignore_index=True)
+        tempDF = pd.DataFrame([tradeData])
+        self.book = pd.concat([self.book, tempDF], ignore_index=True)
 
     def toDataFrame(self) -> pd.DataFrame:
         return self.book
@@ -205,7 +206,7 @@ class BackTest(threading.Thread):
             - (self.longMovingAverageTerm) * 60 * self.tickInterval
         )
 
-        data = self.getData(lastTime, 60)
+        data = self.getData(lastTime, self.longMovingAverageTerm)
         lastTime = int(data["open_time"].iloc[-1]) + 1
 
         while lastTime < self.endDate.timestamp():
@@ -213,64 +214,64 @@ class BackTest(threading.Thread):
             resultdata: pd.DataFrame = self.getData(lastTime)
             lastTime: int = int(resultdata["open_time"].iloc[-1]) + 1
 
-            data: pd.DataFrame = data.iloc[-60:].append(resultdata, ignore_index=True)
+            data: pd.DataFrame = pd.concat([data, resultdata], ignore_index=True)
 
             # dateString = datetime.fromtimestamp(lastTime).strftime("%y.%m.%d %H%M%S")
             # data.to_csv(f"result/data{dateString}.csv")
 
-            closeData: pd.DataFrame = data["close"]
-            shortMA = closeData.rolling(window=self.shortMovingAverageTerm).mean()
-            longMA = closeData.rolling(window=self.longMovingAverageTerm).mean()
-            longMAStd = closeData.rolling(window=self.longMovingAverageTerm).std()
+        closeData: pd.DataFrame = data["close"]
+        shortMA = closeData.rolling(window=self.shortMovingAverageTerm).mean()
+        longMA = closeData.rolling(window=self.longMovingAverageTerm).mean()
+        longMAStd = closeData.rolling(window=self.longMovingAverageTerm).std()
 
-            for i in range(60, len(closeData)):
-                tradeTime: int = data["open_time"].iloc[i]
+        for i in range(self.longMovingAverageTerm, len(closeData)):
+            tradeTime: int = data["open_time"].iloc[i]
 
-                coinData = strategy.CoinData(
-                    float(shortMA.iloc[i]),
-                    float(longMA.iloc[i]),
-                    float(longMAStd.iloc[i]),
-                    float(closeData.iloc[i]),
-                )
+            coinData = strategy.CoinData(
+                float(shortMA.iloc[i]),
+                float(longMA.iloc[i]),
+                float(longMAStd.iloc[i]),
+                float(closeData.iloc[i]),
+            )
 
-                # 전략 수행
-                self.strategy.decide(coinData)
-                side = ""
-                if self.strategy.openShort:
-                    side = self.account.openShort(coinData.close)
-                    if not self.strategy.isInBox:
-                        side += "*"
-                    self.accountBook.write(tradeTime, side, coinData.close)
+            # 전략 수행
+            self.strategy.decide(coinData)
+            side = ""
+            if self.strategy.openShort:
+                side = self.account.openShort(coinData.close)
+                if not self.strategy.isInBox:
+                    side += "*"
+                self.accountBook.write(tradeTime, side, coinData.close)
 
-                if self.strategy.closeShort:
-                    side = self.account.closeShort(coinData.close)
-                    if not self.strategy.isInBox:
-                        side += "*"
-                    self.accountBook.write(tradeTime, side, coinData.close)
+            if self.strategy.closeShort:
+                side = self.account.closeShort(coinData.close)
+                if not self.strategy.isInBox:
+                    side += "*"
+                self.accountBook.write(tradeTime, side, coinData.close)
 
-                if self.strategy.openLong:
-                    side = self.account.openLong(coinData.close)
-                    if not self.strategy.isInBox:
-                        side += "*"
-                    self.accountBook.write(tradeTime, side, coinData.close)
+            if self.strategy.openLong:
+                side = self.account.openLong(coinData.close)
+                if not self.strategy.isInBox:
+                    side += "*"
+                self.accountBook.write(tradeTime, side, coinData.close)
 
-                if self.strategy.closeLong:
-                    side = self.account.closeLong(coinData.close)
-                    if not self.strategy.isInBox:
-                        side += "*"
-                    self.accountBook.write(tradeTime, side, coinData.close)
+            if self.strategy.closeLong:
+                side = self.account.closeLong(coinData.close)
+                if not self.strategy.isInBox:
+                    side += "*"
+                self.accountBook.write(tradeTime, side, coinData.close)
 
-                if self.strategy.allCloseLong:
-                    side = self.account.allCloseLong(coinData.close)
-                    if not self.strategy.isInBox:
-                        side += "*"
-                    self.accountBook.write(tradeTime, side, coinData.close)
+            if self.strategy.allCloseLong:
+                side = self.account.allCloseLong(coinData.close)
+                if not self.strategy.isInBox:
+                    side += "*"
+                self.accountBook.write(tradeTime, side, coinData.close)
 
-                if self.strategy.allCloseShort:
-                    side = self.account.allCloseShort(coinData.close)
-                    if not self.strategy.isInBox:
-                        side += "*"
-                    self.accountBook.write(tradeTime, side, coinData.close)
+            if self.strategy.allCloseShort:
+                side = self.account.allCloseShort(coinData.close)
+                if not self.strategy.isInBox:
+                    side += "*"
+                self.accountBook.write(tradeTime, side, coinData.close)
 
         accountBook = self.accountBook.toDataFrame()
         account = self.account.toDataFrame()
@@ -284,3 +285,6 @@ class BackTest(threading.Thread):
         except:
             accountBook.to_csv(f"result/{self.symbol} accountBook.temp")
             account.to_csv(f"result/{self.symbol} account.temp")
+
+        data.plot(x="open_time", y="close")
+        plt.show()
