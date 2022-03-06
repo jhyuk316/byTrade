@@ -228,10 +228,10 @@ class BackTest(threading.Thread):
             tradeTime: int = data["open_time"].iloc[i]
 
             coinData = strategy.CoinData(
-                float(shortMA.iloc[i]),
-                float(longMA.iloc[i]),
-                float(longMAStd.iloc[i]),
-                float(closeData.iloc[i]),
+                shortMA=float(shortMA.iloc[i]),
+                longMA=float(longMA.iloc[i]),
+                longMAStd=float(longMAStd.iloc[i]),
+                close=float(closeData.iloc[i]),
             )
 
             # 전략 수행

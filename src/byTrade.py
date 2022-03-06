@@ -93,10 +93,10 @@ class Trade(threading.Thread):
             print("Buy Sell Price ", buyPrice, sellPrice)
 
             coinData = strategy.CoinData(
-                shortMA.iloc[-1],
-                longMA.iloc[-1],
-                longMAStd.iloc[-1],
-                closeData.iloc[-1],
+                shortMA=shortMA.iloc[-1],
+                longMA=longMA.iloc[-1],
+                longMAStd=longMAStd.iloc[-1],
+                close=closeData.iloc[-1],
             )
 
             # 구입 판매 결정

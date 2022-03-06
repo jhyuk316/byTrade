@@ -5,7 +5,7 @@ from dataclasses import dataclass
 class CoinData:
     shortMA: float = None
     longMA: float = None
-    shortMA: float = None
+    shortMAStd: float = None
     longMAStd: float = None
     close: float = None
     open: float = None
