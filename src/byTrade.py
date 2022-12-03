@@ -3,7 +3,7 @@ import threading
 import time
 
 import pandas as pd
-from pybit import HTTP
+from pybit import usdt_perpetual
 
 import apiKey as Key
 import market
@@ -12,17 +12,19 @@ import strategy
 
 class Trade(threading.Thread):
     def __init__(
-        self,
-        marketType: market.Type,
-        # tradeType: market.TradeType,
-        symbol: str,
-        shortMA: int = 18,
-        longMA: int = 60,
-        BBFactor: int = 2,
-        tickInterval: int = 1,
+            self,
+            marketType: market.Type,
+            # tradeType: market.TradeType,
+            symbol: str,
+            shortMA: int = 18,
+            longMA: int = 60,
+            BBFactor: int = 2,
+            tickInterval: int = 1,
+            quantity: float = 0.01,
+            tradeType: market.TradeType = market.TradeType.TEST,
     ) -> None:
         threading.Thread.__init__(self)
-        mURL = market.URL(marketType, market.TradeType.MAIN)
+        mURL = market.URL(marketType, tradeType)
         self.urlRestBybit = mURL.urlRestBybit
         self.urlWebSocketPublic = mURL.urlWebSocketPublic
         self.urlWebSocketPrivate = mURL.urlWebSocketPrivate
@@ -32,11 +34,22 @@ class Trade(threading.Thread):
         self.symbol = symbol
         # tick_interval 1 3 5 15 30 60 120 240 360 720 "D" "M" "W"
         self.tickInterval = tickInterval
+        self.qty = quantity
 
         self.strategy = strategy.Strategy(BBFactor)
 
         self.shortMovingAverageTerm = shortMA
         self.longMovingAverageTerm = longMA
+
+        self.session_unauth = usdt_perpetual.HTTP(
+            endpoint=mURL.urlRestBybit
+        )
+
+        self.session_auth = usdt_perpetual.HTTP(
+            endpoint=mURL.urlRestBybit,
+            api_key=Key.apiKey,
+            api_secret=Key.apiSecret
+        )
 
     def setMATerm(self, short: int, long: int) -> None:
         if short >= long:
@@ -61,8 +74,7 @@ class Trade(threading.Thread):
         while True:
             # TODO - 정보 읽기 분리
             # 시장 정보 가져오기
-            readSession = HTTP(self.urlRestBybit)
-            data = readSession.query_kline(
+            data = self.session_unauth.query_kline(
                 symbol=self.symbol,
                 interval=self.tickInterval,
                 limit=200,  # MAX 200
@@ -82,11 +94,9 @@ class Trade(threading.Thread):
             longMA = closeData.rolling(window=self.longMovingAverageTerm).mean()
 
             longMAStd = closeData.rolling(window=self.longMovingAverageTerm).std()
-            upBB = longMA + self.bollingerBandsFactor * longMAStd
-            downBB = longMA - self.bollingerBandsFactor * longMAStd
 
             # 구매 판매가 설정
-            orderBookData = readSession.orderbook(symbol=self.symbol)
+            orderBookData = self.session_unauth.orderbook(symbol=self.symbol)
             orderBookData = pd.DataFrame(orderBookData["result"])
             buyPrice = orderBookData["price"].iloc[25]  # 25번 행 buy 가격
             sellPrice = orderBookData["price"].iloc[24]  # 24번 행 sell 가격
@@ -99,37 +109,80 @@ class Trade(threading.Thread):
                 close=closeData.iloc[-1],
             )
 
-            # 구입 판매 결정
-            accountSession = HTTP(self.urlRestBybit, self.apiKey, self.apiSecret)
-            self.strategy.decide(coinData)
+            # 주요 개념
+            # Time In Force
+            # https://www.bybit.com/en-US/help-center/bybitHC_Article?language=en_US&id=000001044
+            # reduce_only
+            # https://ascendex.com/ko/support/articles/49610-what-is-a-reduce-only-order
+            # close_on_trigger
+            # ??
 
             # 전략 수행
             self.strategy.decide(coinData)
             side = ""
+
+            # 체결되지 않은 거래 모두 취소
+            cancel_all_active_orders = self.session_auth.cancel_all_active_orders(symbol="BTCUSDT")
+            print(cancel_all_active_orders)
+
             if self.strategy.openShort:
                 print("Limit에 open Short {self.symbol} {buyPrice}")
-                openShortResult = accountSession.place_active_order(
+                openShortResult = self.session_auth.place_active_order(
                     symbol=self.symbol,
-                    side="Buy",
+                    side="Sell",
                     order_type="Limit",
                     qty=0.01,
                     price=buyPrice,
-                    time_in_force=True,
+                    time_in_force="GoodTillCancel",
                     reduce_only=False,
+                    close_on_trigger=False
                 )
                 print(openShortResult)
 
             if self.strategy.closeShort:
                 # TODO closeShort
                 print("Limit에 close Short {self.symbol} {buyPrice}")
+                closeShort = self.session_auth.place_active_order(
+                    symbol=self.symbol,
+                    side="Buy",
+                    order_type="Limit",
+                    qty=0.01,
+                    price=buyPrice,
+                    time_in_force="GoodTillCancel",
+                    reduce_only=True,
+                    close_on_trigger=False
+                )
+                print(closeShort)
 
             if self.strategy.openLong:
                 # TODO openLong
                 print("Limit에 open long {self.symbol} {buyPrice}")
+                closeShort = self.session_auth.place_active_order(
+                    symbol=self.symbol,
+                    side="Buy",
+                    order_type="Limit",
+                    qty=0.01,
+                    price=buyPrice,
+                    time_in_force="GoodTillCancel",
+                    reduce_only=False,
+                    close_on_trigger=False
+                )
+                print(closeShort)
 
             if self.strategy.closeLong:
                 # TODO closeLong
-                print("Limit에 open Short {self.symbol} {buyPrice}")
+                print("Limit에 close Long {self.symbol} {buyPrice}")
+                closeShort = self.session_auth.place_active_order(
+                    symbol=self.symbol,
+                    side="Sell",
+                    order_type="Limit",
+                    qty=0.01,
+                    price=buyPrice,
+                    time_in_force="GoodTillCancel",
+                    reduce_only=True,
+                    close_on_trigger=False
+                )
+                print(closeShort)
 
             if self.strategy.allCloseLong:
                 # TODO allCloseLong
@@ -141,4 +194,3 @@ class Trade(threading.Thread):
 
             term = 60 * self.tickInterval + 1 - diffTime
             time.sleep(term if term > 0 else 0)
-
