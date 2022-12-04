@@ -7,8 +7,17 @@ from pybit import usdt_perpetual
 if __name__ == "__main__":
     print("Start ByTrade!!!")
 
-    trade = Trade(market.Type.USDTPerpetual, "XRPUSDT", tradeType=market.TradeType.TEST)
+    trade = Trade(
+        marketType=market.Type.USDTPerpetual,
+        symbol="XRPUSDT",
+        shortMA=18,
+        longMA=60,
+        BBFactor=2,
+        tickInterval=1,
+        quantity=1,
+        tradeType=market.TradeType.MAIN)
     trade.start()
+    # trade.run()
 
     # 백테스트
     # startDate = datetime(2022, 2, 10, 12, 0, 0)

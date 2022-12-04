@@ -13,15 +13,14 @@ import strategy
 class Trade(threading.Thread):
     def __init__(
             self,
-            marketType: market.Type,
-            # tradeType: market.TradeType,
-            symbol: str,
+            marketType: market.Type = market.Type.USDTPerpetual,
+            tradeType: market.TradeType = market.TradeType.TEST,
+            symbol: str = "XRPUSDT",
             shortMA: int = 18,
             longMA: int = 60,
             BBFactor: int = 2,
             tickInterval: int = 1,
             quantity: float = 0.01,
-            tradeType: market.TradeType = market.TradeType.TEST,
     ) -> None:
         threading.Thread.__init__(self)
         mURL = market.URL(marketType, tradeType)
@@ -50,6 +49,8 @@ class Trade(threading.Thread):
             api_key=Key.apiKey,
             api_secret=Key.apiSecret
         )
+        print("marketURL ", mURL.urlRestBybit)
+        print("symbol", symbol)
 
     def setMATerm(self, short: int, long: int) -> None:
         if short >= long:
@@ -122,7 +123,10 @@ class Trade(threading.Thread):
             side = ""
 
             # 체결되지 않은 거래 모두 취소
-            cancel_all_active_orders = self.session_auth.cancel_all_active_orders(symbol="BTCUSDT")
+            # active_order = self.session_auth.get_active_order(symbol=self.symbol)
+            # print(active_order);
+            print("cancel_all_active_orders")
+            cancel_all_active_orders = self.session_auth.cancel_all_active_orders(symbol=self.symbol)
             print(cancel_all_active_orders)
 
             if self.strategy.openShort:
@@ -131,7 +135,7 @@ class Trade(threading.Thread):
                     symbol=self.symbol,
                     side="Sell",
                     order_type="Limit",
-                    qty=0.01,
+                    qty=self.qty,
                     price=buyPrice,
                     time_in_force="GoodTillCancel",
                     reduce_only=False,
@@ -146,7 +150,7 @@ class Trade(threading.Thread):
                     symbol=self.symbol,
                     side="Buy",
                     order_type="Limit",
-                    qty=0.01,
+                    qty=self.qty,
                     price=buyPrice,
                     time_in_force="GoodTillCancel",
                     reduce_only=True,
@@ -161,7 +165,7 @@ class Trade(threading.Thread):
                     symbol=self.symbol,
                     side="Buy",
                     order_type="Limit",
-                    qty=0.01,
+                    qty=self.qty,
                     price=buyPrice,
                     time_in_force="GoodTillCancel",
                     reduce_only=False,
@@ -176,7 +180,7 @@ class Trade(threading.Thread):
                     symbol=self.symbol,
                     side="Sell",
                     order_type="Limit",
-                    qty=0.01,
+                    qty=self.qty,
                     price=buyPrice,
                     time_in_force="GoodTillCancel",
                     reduce_only=True,
@@ -194,3 +198,36 @@ class Trade(threading.Thread):
 
             term = 60 * self.tickInterval + 1 - diffTime
             time.sleep(term if term > 0 else 0)
+
+
+if __name__ == "__main__":
+    symbol = "XRPUSDT"
+    session_unauth = usdt_perpetual.HTTP(
+        endpoint="https://api-testnet.bybit.com"
+    )
+    orderbook = session_unauth.orderbook(symbol=symbol)
+    print(orderbook)
+
+    orderBookData = session_unauth.orderbook(symbol=symbol)
+    orderBookData = pd.DataFrame(orderBookData["result"])
+    print("orderBookData")
+    print(orderBookData)
+    buyPrice = orderBookData["price"].iloc[26]  # 25번 행 buy 가격
+    sellPrice = orderBookData["price"].iloc[23]  # 24번 행 sell 가격
+    print("Buy Sell Price ", buyPrice, sellPrice)
+
+    session_auth = usdt_perpetual.HTTP(
+        endpoint="https://api.bybit.com",
+        api_key=Key.apiKey,
+        api_secret=Key.apiSecret
+    )
+
+    cancel_all_active_orders = session_auth.cancel_all_active_orders(symbol=symbol)
+    print(cancel_all_active_orders)
+
+    print("Limit에 open Short {self.symbol} {buyPrice}")
+    place_active_order = session_auth.place_active_order(symbol=symbol, side="Sell", order_type="Limit", qty=1,
+                                                         price=buyPrice,
+                                                         time_in_force="GoodTillCancel", reduce_only=False,
+                                                         close_on_trigger=False)
+    print(place_active_order)
