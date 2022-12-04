@@ -99,6 +99,7 @@ class Trade(threading.Thread):
             # 구매 판매가 설정
             orderBookData = self.session_unauth.orderbook(symbol=self.symbol)
             orderBookData = pd.DataFrame(orderBookData["result"])
+
             buyPrice = orderBookData["price"].iloc[25]  # 25번 행 buy 가격
             sellPrice = orderBookData["price"].iloc[24]  # 24번 행 sell 가격
             print("Buy Sell Price ", buyPrice, sellPrice)
@@ -166,7 +167,7 @@ class Trade(threading.Thread):
                     side="Buy",
                     order_type="Limit",
                     qty=self.qty,
-                    price=buyPrice,
+                    price=sellPrice,
                     time_in_force="GoodTillCancel",
                     reduce_only=False,
                     close_on_trigger=False
@@ -181,7 +182,7 @@ class Trade(threading.Thread):
                     side="Sell",
                     order_type="Limit",
                     qty=self.qty,
-                    price=buyPrice,
+                    price=sellPrice,
                     time_in_force="GoodTillCancel",
                     reduce_only=True,
                     close_on_trigger=False
@@ -226,8 +227,13 @@ if __name__ == "__main__":
     print(cancel_all_active_orders)
 
     print("Limit에 open Short {self.symbol} {buyPrice}")
+    # place_active_order = session_auth.place_active_order(symbol=symbol, side="Sell", order_type="Limit", qty=1,
+    #                                                      price=buyPrice,
+    #                                                      time_in_force="GoodTillCancel", reduce_only=False,
+    #                                                      close_on_trigger=False)
+
     place_active_order = session_auth.place_active_order(symbol=symbol, side="Sell", order_type="Limit", qty=1,
                                                          price=buyPrice,
-                                                         time_in_force="GoodTillCancel", reduce_only=False,
+                                                         time_in_force="GoodTillCancel", reduce_only=True,
                                                          close_on_trigger=False)
     print(place_active_order)
