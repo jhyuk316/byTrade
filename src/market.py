@@ -21,7 +21,7 @@ class URL:
             pass
         elif marketType == Type.USDTPerpetual:
             if tradeType == TradeType.TEST:
-                self.urlRestBybit = "http://api-testnet.bybit.com"
+                self.urlRestBybit = "https://api-testnet.bybit.com"
                 self.urlWebSocketPublic = (
                     "wss://stream-testnet.bybit.com/realtime_public"
                 )
@@ -29,7 +29,7 @@ class URL:
                     "wss://stream-testnet.bybit.com/realtime_private"
                 )
             elif tradeType == TradeType.MAIN:
-                self.urlRestBybit = "http://api.bybit.com"
+                self.urlRestBybit = "https://api.bybit.com"
                 self.urlWebSocketPublic = "wss://stream.bybit.com/realtime_public"
                 self.urlWebSocketPrivate = "wss://stream.bybit.com/realtime_private"
             else:
